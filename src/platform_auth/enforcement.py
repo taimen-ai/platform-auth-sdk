@@ -1,0 +1,203 @@
+"""Policy Enforcement Point: один порядок проверок для всех сервисов.
+
+Порядок фиксирован и не настраивается:
+
+1. **identity** — токен проверен IAM-подписью, issuer и audience точные;
+2. **revocation** — локальная политика сервиса: credential и Principal живы;
+3. **entitlement** — продукт и feature лицензированы для этого tenant;
+4. **domain** — доменная политика самого сервиса (роли, владение, scope
+   проекта). Её SDK не знает и знать не должен.
+
+Порядок именно такой, потому что каждый следующий шаг дороже предыдущего и
+осмыслен только после него: спрашивать лицензию для неподтверждённой identity
+незачем, а доменное право — единственное, что нельзя вынести из продукта.
+
+Результат любого исхода попадает в audit одной записью. Отказ и недоступность
+различаются в журнале, но клиенту оба уходят стабильным кодом.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
+from platform_auth.audit import AuditSink, CollectingAuditSink, DecisionRecord
+from platform_auth.context import TrustedAuthContext
+from platform_auth.entitlement import Decision, EntitlementClient, NullEntitlementClient
+from platform_auth.errors import EnforcementError, InvalidToken
+from platform_auth.revocation import (
+    RevocationDirectory,
+    TokenLifetimeWindow,
+    enforce_revocation,
+)
+from platform_auth.verify import TokenVerifier, parse_bearer
+
+DomainCheck = Callable[[TrustedAuthContext], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class Allowed:
+    """Положительный результат enforcement."""
+
+    context: TrustedAuthContext
+    decision: Decision | None = None
+
+    @property
+    def degraded(self) -> bool:
+        return self.decision is not None and self.decision.source == "degraded"
+
+
+class PolicyEnforcementPoint:
+    def __init__(
+        self,
+        verifier: TokenVerifier,
+        *,
+        entitlement: EntitlementClient | NullEntitlementClient | None = None,
+        revocation: RevocationDirectory | None = None,
+        audit: AuditSink | None = None,
+    ) -> None:
+        self._verifier = verifier
+        self._entitlement = entitlement or NullEntitlementClient()
+        self._revocation: RevocationDirectory = revocation or TokenLifetimeWindow()
+        self._audit = audit or CollectingAuditSink()
+
+    @property
+    def audit_sink(self) -> AuditSink:
+        return self._audit
+
+    async def enforce_authorization_header(
+        self,
+        authorization: str | None,
+        *,
+        action: str,
+        feature: str = "",
+        required_scopes: tuple[str, ...] = (),
+        required_amount: int = 0,
+        domain_check: DomainCheck | None = None,
+        correlation_id: str = "",
+        causation_id: str = "",
+    ) -> Allowed:
+        try:
+            token = parse_bearer(authorization)
+        except EnforcementError as exc:
+            self._deny(None, stage="identity", action=action, error=exc)
+            raise
+        return await self.enforce(
+            token,
+            action=action,
+            feature=feature,
+            required_scopes=required_scopes,
+            required_amount=required_amount,
+            domain_check=domain_check,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+
+    async def enforce(
+        self,
+        token: str,
+        *,
+        action: str,
+        feature: str = "",
+        required_scopes: tuple[str, ...] = (),
+        required_amount: int = 0,
+        domain_check: DomainCheck | None = None,
+        correlation_id: str = "",
+        causation_id: str = "",
+    ) -> Allowed:
+        ctx: TrustedAuthContext | None = None
+
+        # 1. identity
+        try:
+            ctx = await self._verifier.verify(
+                token, correlation_id=correlation_id, causation_id=causation_id
+            )
+        except EnforcementError as exc:
+            self._deny(None, stage="identity", action=action, error=exc)
+            raise
+        except Exception as exc:  # pragma: no cover - защита от неожиданного
+            wrapped = InvalidToken("verification_failed")
+            self._deny(None, stage="identity", action=action, error=wrapped)
+            raise wrapped from exc
+
+        # Scope ceiling — часть identity: он приходит из credential, а не из
+        # доменной политики, и только сужает то, что вообще можно просить.
+        try:
+            if required_scopes:
+                ctx.require_scope(*required_scopes)
+        except EnforcementError as exc:
+            self._deny(ctx, stage="identity", action=action, error=exc)
+            raise
+
+        # 2. revocation
+        try:
+            enforce_revocation(await self._revocation.check(ctx))
+        except EnforcementError as exc:
+            self._deny(ctx, stage="revocation", action=action, error=exc)
+            raise
+
+        # 3. entitlement
+        decision: Decision | None = None
+        if feature:
+            try:
+                decision = await self._entitlement.check(
+                    ctx, feature=feature, required_amount=required_amount
+                )
+                decision.raise_if_denied()
+            except EnforcementError as exc:
+                self._deny(
+                    ctx,
+                    stage="entitlement",
+                    action=action,
+                    error=exc,
+                    feature=feature,
+                    entitlement_source=decision.source if decision else "",
+                )
+                raise
+
+        # 4. domain policy
+        if domain_check is not None:
+            try:
+                await domain_check(ctx)
+            except EnforcementError as exc:
+                self._deny(ctx, stage="domain", action=action, error=exc, feature=feature)
+                raise
+
+        self._audit.record(
+            DecisionRecord.from_context(
+                ctx,
+                outcome="allowed",
+                stage="domain" if domain_check is not None else "entitlement",
+                action=action,
+                audience=self._verifier.audience,
+                feature=feature,
+                product=decision.product if decision else "",
+                entitlement_source=decision.source if decision else "",
+            )
+        )
+        return Allowed(context=ctx, decision=decision)
+
+    def _deny(
+        self,
+        ctx: TrustedAuthContext | None,
+        *,
+        stage: str,
+        action: str,
+        error: EnforcementError,
+        feature: str = "",
+        entitlement_source: str = "",
+    ) -> None:
+        self._audit.record(
+            DecisionRecord.from_context(
+                ctx,
+                outcome="unavailable" if error.retriable else "denied",
+                stage=stage,
+                action=action,
+                audience=self._verifier.audience,
+                code=error.code,
+                reason=error.audit_reason,
+                feature=feature,
+                entitlement_source=entitlement_source,
+                details=error.details,
+            )
+        )
