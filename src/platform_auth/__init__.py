@@ -41,6 +41,7 @@ from platform_auth.revocation import (
     RevocationDirectory,
     TokenLifetimeWindow,
 )
+from platform_auth.service_identity import ServiceCredentials, ServiceTokenProvider
 from platform_auth.verify import TokenVerifier, VerifierConfig, parse_bearer
 
 __all__ = [
@@ -65,6 +66,8 @@ __all__ = [
     "PolicyEnforcementPoint",
     "Reservation",
     "RevocationDirectory",
+    "ServiceCredentials",
+    "ServiceTokenProvider",
     "StaticKeySet",
     "TokenLifetimeWindow",
     "TokenVerifier",
