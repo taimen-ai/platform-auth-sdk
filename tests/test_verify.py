@@ -170,6 +170,34 @@ async def test_scope_absent_from_token_is_not_granted_by_ceiling(
     assert not ctx.has_scope("admin")
 
 
+async def test_empty_ceiling_grants_nothing(
+    verifier: TokenVerifier, signing_key: SigningKey
+) -> None:
+    """Объявленный, но пустой потолок — это ноль прав, а не их отсутствие."""
+    token = signing_key.issue(scopes=["read", "write"], scope_ceiling=[])
+
+    ctx = await verifier.verify(token)
+
+    assert not ctx.has_scope("read")
+    assert not ctx.has_scope("write")
+    assert ctx.effective_scopes() == frozenset()
+    with pytest.raises(InsufficientScope):
+        ctx.require_scope("read")
+
+
+async def test_absent_ceiling_does_not_restrict(
+    verifier: TokenVerifier, signing_key: SigningKey
+) -> None:
+    """Отсутствие claim — это отсутствие потолка: у service account его нет."""
+    token = signing_key.issue(scopes=["read", "write"])
+
+    ctx = await verifier.verify(token)
+
+    assert ctx.scope_ceiling is None
+    assert ctx.has_scope("read")
+    assert ctx.effective_scopes() == frozenset({"read", "write"})
+
+
 def test_parse_bearer_rejects_other_schemes() -> None:
     with pytest.raises(InvalidToken):
         parse_bearer(None)

@@ -9,6 +9,10 @@
   разрешает пережить короткий сбой, но только в пределах bounded window и
   только на ранее полученном решении. Просроченный кэш даёт
   `entitlement_unavailable`, а не тихое «разрешено».
+* **отказ — не авария.** Degraded включается на транспортной ошибке и 5xx.
+  Ответ 4xx означает, что сервис нас услышал и отказал: лицензия снята, продукт
+  неизвестен, наша service identity отклонена. Такой ответ закрывает операцию
+  сразу, иначе кэш продлевал бы доступ ровно в тот момент, когда его отняли.
 * **stale не расширяет.** Устаревшее решение нельзя применить к запросу с
   большим `required_amount`, чем тот, на котором оно было получено: иначе
   кэш превращается в способ обойти квоту во время сбоя.
@@ -150,6 +154,28 @@ class EntitlementClient:
             decision = await self._check_online(
                 ctx, feature=feature, required_amount=required_amount
             )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500:
+                # 4xx — это ответ про сам запрос, а не авария: отклонена наша
+                # service identity, снята лицензия, неизвестен продукт. Выдать
+                # здесь закэшированное allow значило бы превратить явный отказ
+                # ещё в пять минут доступа.
+                raise EntitlementUnavailable(
+                    "entitlement_request_rejected",
+                    details={
+                        "product": self._product,
+                        "feature": feature,
+                        "status": exc.response.status_code,
+                    },
+                ) from exc
+            # 5xx — сервис действительно сломан, здесь bounded degraded уместен.
+            degraded = self._degraded(cached, now=now, required_amount=required_amount)
+            if degraded is None:
+                raise EntitlementUnavailable(
+                    "entitlement_service_unavailable",
+                    details={"product": self._product, "feature": feature},
+                ) from exc
+            return degraded
         except (httpx.HTTPError, ValueError) as exc:
             degraded = self._degraded(cached, now=now, required_amount=required_amount)
             if degraded is None:

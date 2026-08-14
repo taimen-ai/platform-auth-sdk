@@ -73,7 +73,10 @@ class TrustedAuthContext:
     expires_at: datetime
     issued_at: datetime | None = None
     # Ceiling предъявленного Platform Access Token: он только сужает authority.
-    scope_ceiling: frozenset[str] = frozenset()
+    # `None` — потолка нет вовсе; пустое множество — потолок объявлен и не
+    # пропускает ничего. Это разные вещи, и складывать их в одно значение
+    # нельзя: тогда токен с нулевым потолком получил бы полную свободу.
+    scope_ceiling: frozenset[str] | None = None
     session_id: uuid.UUID | None = None
     auth_time: datetime | None = None
     acr: str = ""
@@ -108,7 +111,7 @@ class TrustedAuthContext:
             scopes=_as_scopes(claims.get("scope")),
             expires_at=expires_at,
             issued_at=_as_datetime(claims.get("iat")),
-            scope_ceiling=_as_scopes(raw_ceiling) if raw_ceiling is not None else frozenset(),
+            scope_ceiling=_as_scopes(raw_ceiling) if raw_ceiling is not None else None,
             session_id=_as_optional_uuid(claims.get("session_id")),
             auth_time=_as_datetime(claims.get("auth_time")),
             acr=str(claims.get("acr", "")),
@@ -122,11 +125,11 @@ class TrustedAuthContext:
 
         Ceiling присутствует не всегда (у service account его нет). Когда он
         есть — он ограничивает: scope вне ceiling не действует, даже если
-        попал в token.
+        попал в token. Объявленный, но пустой ceiling не пропускает ничего.
         """
         if scope not in self.scopes:
             return False
-        return not self.scope_ceiling or scope in self.scope_ceiling
+        return self.scope_ceiling is None or scope in self.scope_ceiling
 
     def require_scope(self, *any_of: str) -> None:
         if not any(self.has_scope(scope) for scope in any_of):
@@ -136,7 +139,7 @@ class TrustedAuthContext:
             )
 
     def effective_scopes(self) -> frozenset[str]:
-        if not self.scope_ceiling:
+        if self.scope_ceiling is None:
             return self.scopes
         return self.scopes & self.scope_ceiling
 

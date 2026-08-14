@@ -143,6 +143,47 @@ async def test_outage_beyond_window_fails_closed(
     await client.aclose()
 
 
+async def test_refusal_is_not_served_from_cache(
+    verifier: TokenVerifier, signing_key: SigningKey, clock: FrozenClock
+) -> None:
+    """Снятая лицензия закрывает доступ сразу, а не через degraded window."""
+    state = {"response": (200, _decision_body())}
+    client = _client(state, clock, cache_ttl_seconds=30, degraded_max_age_seconds=300)
+    ctx = await _ctx(verifier, signing_key)
+    await client.check(ctx, feature="tasks")
+
+    # Сервис отвечает 403: наша service identity больше не принимается.
+    state["response"] = (403, {"detail": "grant_revoked"})
+    clock.advance(60)
+
+    with pytest.raises(EntitlementUnavailable) as exc:
+        await client.check(ctx, feature="tasks")
+    # Клиенту уходит тот же стабильный код, что и при аварии — по ответу нельзя
+    # отличить снятую лицензию от недоступности. Различие живёт только в audit.
+    assert exc.value.code == "entitlement_unavailable"
+    assert exc.value.audit_reason == "entitlement_request_rejected"
+    assert exc.value.details["status"] == 403
+    await client.aclose()
+
+
+async def test_server_error_still_reuses_decision(
+    verifier: TokenVerifier, signing_key: SigningKey, clock: FrozenClock
+) -> None:
+    """5xx — настоящая авария, здесь bounded degraded остаётся в силе."""
+    state = {"response": (200, _decision_body())}
+    client = _client(state, clock, cache_ttl_seconds=30, degraded_max_age_seconds=300)
+    ctx = await _ctx(verifier, signing_key)
+    await client.check(ctx, feature="tasks")
+
+    state["response"] = (503, {"detail": "upstream down"})
+    clock.advance(60)
+    decision = await client.check(ctx, feature="tasks")
+
+    assert decision.allowed
+    assert decision.source == "degraded"
+    await client.aclose()
+
+
 async def test_degraded_decision_does_not_widen(
     verifier: TokenVerifier, signing_key: SigningKey, clock: FrozenClock
 ) -> None:
