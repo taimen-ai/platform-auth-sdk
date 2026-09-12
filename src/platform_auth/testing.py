@@ -52,9 +52,7 @@ class SigningKey:
             )
             .decode()
         )
-        return cls(
-            private_pem=private_pem, public_pem=public_pem, key_id=key_id, _private=private
-        )
+        return cls(private_pem=private_pem, public_pem=public_pem, key_id=key_id, _private=private)
 
     def jwks(self) -> dict[str, list[dict[str, str]]]:
         numbers = self._private.public_key().public_numbers()

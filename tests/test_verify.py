@@ -130,9 +130,7 @@ async def test_missing_tenant_claim_closes_entry(
         await verifier.verify(token)
 
 
-async def test_extra_required_claim_is_enforced(
-    keys: object, signing_key: SigningKey
-) -> None:
+async def test_extra_required_claim_is_enforced(keys: object, signing_key: SigningKey) -> None:
     """Сервис может требовать step-up: без `acr` вход закрыт, а не понижен."""
     verifier = TokenVerifier(
         keys,  # type: ignore[arg-type]

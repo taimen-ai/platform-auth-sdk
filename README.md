@@ -38,13 +38,20 @@ identity → revocation → entitlement → domain policy → transactional gate
 
 ```python
 from platform_auth import (
-    JwksCache, PolicyEnforcementPoint, TokenVerifier, VerifierConfig,
+    JwksCache,
+    PolicyEnforcementPoint,
+    TokenVerifier,
+    VerifierConfig,
 )
 
 keys = JwksCache("https://iam.example/.well-known/jwks.json")
-verifier = TokenVerifier(keys, VerifierConfig(
-    issuer="https://iam.example", audience="control-plane",
-))
+verifier = TokenVerifier(
+    keys,
+    VerifierConfig(
+        issuer="https://iam.example",
+        audience="control-plane",
+    ),
+)
 pep = PolicyEnforcementPoint(verifier, entitlement=..., revocation=..., audit=...)
 
 allowed = await pep.enforce_authorization_header(
