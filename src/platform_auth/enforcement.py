@@ -5,8 +5,11 @@
 1. **identity** — токен проверен IAM-подписью, issuer и audience точные;
 2. **revocation** — локальная политика сервиса: credential и Principal живы;
 3. **entitlement** — продукт и feature лицензированы для этого tenant;
-4. **domain** — доменная политика самого сервиса (роли, владение, scope
-   проекта). Её SDK не знает и знать не должен.
+4. **policy** — организационная авторизация: может ли principal выполнить
+   действие над найденным ресурсом. Решает внешний policy-service
+   (ADR-0025), стадия включается передачей `resource`;
+5. **domain** — транзакционные гейты самого сервиса (claim, lease, fencing,
+   автор approval). Их SDK не знает и знать не должен.
 
 Порядок именно такой, потому что каждый следующий шаг дороже предыдущего и
 осмыслен только после него: спрашивать лицензию для неподтверждённой identity
@@ -18,13 +21,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from platform_auth.audit import AuditSink, CollectingAuditSink, DecisionRecord
+from platform_auth.authorization import (
+    AuthorizationClient,
+    ContextualTuple,
+    NullAuthorizationClient,
+    PolicyDecision,
+    ResourceRef,
+)
 from platform_auth.context import TrustedAuthContext
 from platform_auth.entitlement import Decision, EntitlementClient, NullEntitlementClient
-from platform_auth.errors import EnforcementError, InvalidToken
+from platform_auth.errors import AuthorizationUnavailable, EnforcementError, InvalidToken
 from platform_auth.revocation import (
     RevocationDirectory,
     TokenLifetimeWindow,
@@ -41,6 +52,7 @@ class Allowed:
 
     context: TrustedAuthContext
     decision: Decision | None = None
+    policy: PolicyDecision | None = None
 
     @property
     def degraded(self) -> bool:
@@ -53,11 +65,15 @@ class PolicyEnforcementPoint:
         verifier: TokenVerifier,
         *,
         entitlement: EntitlementClient | NullEntitlementClient | None = None,
+        authorization: AuthorizationClient | NullAuthorizationClient | None = None,
         revocation: RevocationDirectory | None = None,
         audit: AuditSink | None = None,
     ) -> None:
         self._verifier = verifier
         self._entitlement = entitlement or NullEntitlementClient()
+        # Для policy заглушка по умолчанию не подставляется: ресурс без
+        # клиента — ошибка конфигурации, а не «проверять нечем, пропускаем».
+        self._authorization = authorization
         self._revocation: RevocationDirectory = revocation or TokenLifetimeWindow()
         self._audit = audit or CollectingAuditSink()
 
@@ -73,6 +89,9 @@ class PolicyEnforcementPoint:
         feature: str = "",
         required_scopes: tuple[str, ...] = (),
         required_amount: int = 0,
+        resource: ResourceRef | None = None,
+        contextual: Sequence[ContextualTuple] = (),
+        policy_consistency: Literal["default", "strong"] = "default",
         domain_check: DomainCheck | None = None,
         correlation_id: str = "",
         causation_id: str = "",
@@ -88,6 +107,9 @@ class PolicyEnforcementPoint:
             feature=feature,
             required_scopes=required_scopes,
             required_amount=required_amount,
+            resource=resource,
+            contextual=contextual,
+            policy_consistency=policy_consistency,
             domain_check=domain_check,
             correlation_id=correlation_id,
             causation_id=causation_id,
@@ -101,6 +123,9 @@ class PolicyEnforcementPoint:
         feature: str = "",
         required_scopes: tuple[str, ...] = (),
         required_amount: int = 0,
+        resource: ResourceRef | None = None,
+        contextual: Sequence[ContextualTuple] = (),
+        policy_consistency: Literal["default", "strong"] = "default",
         domain_check: DomainCheck | None = None,
         correlation_id: str = "",
         causation_id: str = "",
@@ -155,27 +180,74 @@ class PolicyEnforcementPoint:
                 )
                 raise
 
-        # 4. domain policy
+        # 4. policy — организационная авторизация над найденным ресурсом
+        policy: PolicyDecision | None = None
+        if resource is not None:
+            try:
+                if self._authorization is None:
+                    # Ресурс передан, а спросить некого. Fail closed: молча
+                    # пропустить значило бы включить allow отсутствием строки
+                    # в конфигурации.
+                    raise AuthorizationUnavailable(
+                        "authorization_not_configured",
+                        details={"action": action, "resource": resource.key},
+                    )
+                policy = await self._authorization.check(
+                    ctx,
+                    action,
+                    resource,
+                    contextual=contextual,
+                    consistency=policy_consistency,
+                )
+                policy.raise_if_denied()
+            except EnforcementError as exc:
+                self._deny(
+                    ctx,
+                    stage="policy",
+                    action=action,
+                    error=exc,
+                    feature=feature,
+                    entitlement_source=decision.source if decision else "",
+                    policy_source=policy.source if policy else "",
+                )
+                raise
+
+        # 5. domain — транзакционные гейты сервиса
         if domain_check is not None:
             try:
                 await domain_check(ctx)
             except EnforcementError as exc:
-                self._deny(ctx, stage="domain", action=action, error=exc, feature=feature)
+                self._deny(
+                    ctx,
+                    stage="domain",
+                    action=action,
+                    error=exc,
+                    feature=feature,
+                    entitlement_source=decision.source if decision else "",
+                    policy_source=policy.source if policy else "",
+                )
                 raise
 
+        if domain_check is not None:
+            stage = "domain"
+        elif resource is not None:
+            stage = "policy"
+        else:
+            stage = "entitlement"
         self._audit.record(
             DecisionRecord.from_context(
                 ctx,
                 outcome="allowed",
-                stage="domain" if domain_check is not None else "entitlement",
+                stage=stage,
                 action=action,
                 audience=self._verifier.audience,
                 feature=feature,
                 product=decision.product if decision else "",
                 entitlement_source=decision.source if decision else "",
+                policy_source=policy.source if policy else "",
             )
         )
-        return Allowed(context=ctx, decision=decision)
+        return Allowed(context=ctx, decision=decision, policy=policy)
 
     def _deny(
         self,
@@ -186,6 +258,7 @@ class PolicyEnforcementPoint:
         error: EnforcementError,
         feature: str = "",
         entitlement_source: str = "",
+        policy_source: str = "",
     ) -> None:
         self._audit.record(
             DecisionRecord.from_context(
@@ -198,6 +271,7 @@ class PolicyEnforcementPoint:
                 reason=error.audit_reason,
                 feature=feature,
                 entitlement_source=entitlement_source,
+                policy_source=policy_source,
                 details=error.details,
             )
         )

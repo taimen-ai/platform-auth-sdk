@@ -86,3 +86,15 @@ class EntitlementUnavailable(EnforcementError):
 
     code = "entitlement_unavailable"
     http_status = 503
+
+
+class AuthorizationUnavailable(EnforcementError):
+    """Решение policy-service получить не удалось.
+
+    Сюда попадают недоступность сервиса без свежего кэша, отклонённый им
+    запрос (4xx) и отсутствие настроенного клиента при переданном ресурсе.
+    Все три — «решения нет», и ни одно не трактуется как allow.
+    """
+
+    code = "authorization_unavailable"
+    http_status = 503

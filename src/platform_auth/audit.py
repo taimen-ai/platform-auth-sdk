@@ -67,7 +67,7 @@ class DecisionRecord:
     """Одно решение PEP: что просили, что решили и почему."""
 
     outcome: str  # allowed | denied | unavailable
-    stage: str  # identity | revocation | entitlement | domain
+    stage: str  # identity | revocation | entitlement | policy | domain
     action: str
     audience: str
     code: str = ""
@@ -80,6 +80,8 @@ class DecisionRecord:
     product: str = ""
     feature: str = ""
     entitlement_source: str = ""
+    # online | cached | disabled — источник решения policy-service.
+    policy_source: str = ""
     correlation_id: str = ""
     causation_id: str = ""
     recorded_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -99,6 +101,7 @@ class DecisionRecord:
         product: str = "",
         feature: str = "",
         entitlement_source: str = "",
+        policy_source: str = "",
         details: Mapping[str, Any] | None = None,
     ) -> DecisionRecord:
         subject = ctx.audit_subject() if ctx is not None else {}
@@ -117,6 +120,7 @@ class DecisionRecord:
             product=product,
             feature=feature,
             entitlement_source=entitlement_source,
+            policy_source=policy_source,
             correlation_id=ctx.correlation_id if ctx else "",
             causation_id=ctx.causation_id if ctx else "",
             details=redact(details or {}),
@@ -138,6 +142,7 @@ class DecisionRecord:
             "product": self.product,
             "feature": self.feature,
             "entitlementSource": self.entitlement_source,
+            "policySource": self.policy_source,
             "correlationId": self.correlation_id,
             "causationId": self.causation_id,
             "recordedAt": self.recorded_at.isoformat(),

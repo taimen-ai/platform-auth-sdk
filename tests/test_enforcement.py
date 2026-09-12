@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
 import pytest
 
 from platform_auth.audit import CollectingAuditSink
+from platform_auth.authorization import ContextualTuple, PolicyDecision, ResourceRef
 from platform_auth.context import TrustedAuthContext
 from platform_auth.enforcement import PolicyEnforcementPoint
 from platform_auth.entitlement import Decision
 from platform_auth.errors import (
+    AuthorizationUnavailable,
     EntitlementUnavailable,
     InsufficientScope,
     InvalidToken,
@@ -31,6 +34,34 @@ class FakeEntitlement:
         self, ctx: TrustedAuthContext, *, feature: str, required_amount: int = 0
     ) -> Decision:
         self.calls += 1
+        if isinstance(self._decision, Exception):
+            raise self._decision
+        return self._decision
+
+
+class FakeAuthorization:
+    def __init__(self, decision: PolicyDecision | Exception) -> None:
+        self._decision = decision
+        self.calls: list[dict[str, object]] = []
+
+    async def check(
+        self,
+        ctx: TrustedAuthContext,
+        action: str,
+        resource: ResourceRef,
+        *,
+        contextual: Sequence[ContextualTuple] = (),
+        on_behalf_of: str | None = None,
+        consistency: str = "default",
+    ) -> PolicyDecision:
+        self.calls.append(
+            {
+                "action": action,
+                "resource": resource.key,
+                "contextual": tuple(contextual),
+                "consistency": consistency,
+            }
+        )
         if isinstance(self._decision, Exception):
             raise self._decision
         return self._decision
@@ -62,16 +93,31 @@ def _denied(feature: str = "tasks") -> Decision:
     )
 
 
+def _policy(allowed: bool, source: str = "online") -> PolicyDecision:
+    return PolicyDecision(
+        allowed=allowed,
+        reason_code="allowed_by_binding" if allowed else "denied_no_binding",
+        decision_id="d-1",
+        policy_version="7",
+        model_version="m-3",
+        source=source,  # type: ignore[arg-type]
+        action="tasks.update",
+        resource="task:t-1",
+    )
+
+
 def _pep(
     verifier: TokenVerifier,
     *,
     entitlement: object | None = None,
+    authorization: object | None = None,
     revocation: object | None = None,
 ) -> tuple[PolicyEnforcementPoint, CollectingAuditSink]:
     sink = CollectingAuditSink()
     pep = PolicyEnforcementPoint(
         verifier,
         entitlement=entitlement,  # type: ignore[arg-type]
+        authorization=authorization,  # type: ignore[arg-type]
         revocation=revocation or FakeRevocation(CredentialStatus.allowed()),  # type: ignore[arg-type]
         audit=sink,
     )
@@ -266,3 +312,117 @@ async def test_audit_record_carries_no_secret(
     serialized = str(sink.records[-1].as_dict())
     assert token not in serialized
     assert "secret" not in serialized.lower()
+
+
+async def test_policy_stage_allows_and_is_visible_in_result_and_audit(
+    verifier: TokenVerifier, signing_key: SigningKey
+) -> None:
+    authorization = FakeAuthorization(_policy(True, source="cached"))
+    pep, sink = _pep(verifier, entitlement=FakeEntitlement(_allowed()), authorization=authorization)
+    tuples = (ContextualTuple("task:t-1", "scope", "workspace:w-1"),)
+
+    result = await pep.enforce(
+        signing_key.issue(),
+        action="tasks.update",
+        feature="tasks",
+        resource=ResourceRef("task", "t-1"),
+        contextual=tuples,
+        policy_consistency="strong",
+    )
+
+    assert result.policy is not None and result.policy.allowed
+    assert authorization.calls == [
+        {
+            "action": "tasks.update",
+            "resource": "task:t-1",
+            "contextual": tuples,
+            "consistency": "strong",
+        }
+    ]
+    record = sink.records[-1]
+    assert record.outcome == "allowed"
+    assert record.stage == "policy"
+    assert record.policy_source == "cached"
+    assert record.as_dict()["policySource"] == "cached"
+
+
+async def test_policy_deny_is_recorded_before_domain_check(
+    verifier: TokenVerifier, signing_key: SigningKey
+) -> None:
+    pep, sink = _pep(
+        verifier,
+        entitlement=FakeEntitlement(_allowed()),
+        authorization=FakeAuthorization(_policy(False)),
+    )
+    domain_called = False
+
+    async def domain_check(_: TrustedAuthContext) -> None:
+        nonlocal domain_called
+        domain_called = True
+
+    with pytest.raises(PermissionDenied) as exc:
+        await pep.enforce(
+            signing_key.issue(),
+            action="tasks.update",
+            feature="tasks",
+            resource=ResourceRef("task", "t-1"),
+            domain_check=domain_check,
+        )
+
+    assert not domain_called
+    assert exc.value.audit_reason == "denied_no_binding"
+    record = sink.records[-1]
+    assert record.stage == "policy"
+    assert record.outcome == "denied"
+    assert record.policy_source == "online"
+    assert record.details == {"action": "tasks.update", "resource": "task:t-1"}
+
+
+async def test_policy_outage_is_unavailable_not_allow(
+    verifier: TokenVerifier, signing_key: SigningKey
+) -> None:
+    pep, sink = _pep(
+        verifier,
+        authorization=FakeAuthorization(AuthorizationUnavailable("policy_service_unavailable")),
+    )
+
+    with pytest.raises(AuthorizationUnavailable):
+        await pep.enforce(
+            signing_key.issue(), action="tasks.update", resource=ResourceRef("task", "t-1")
+        )
+
+    assert sink.records[-1].stage == "policy"
+    assert sink.records[-1].outcome == "unavailable"
+
+
+async def test_resource_without_authorization_client_fails_closed(
+    verifier: TokenVerifier, signing_key: SigningKey
+) -> None:
+    """Ресурс передан, клиент policy не настроен — ошибка конфигурации, не allow."""
+    pep, sink = _pep(verifier, entitlement=FakeEntitlement(_allowed()))
+
+    with pytest.raises(AuthorizationUnavailable) as exc:
+        await pep.enforce(
+            signing_key.issue(),
+            action="tasks.update",
+            feature="tasks",
+            resource=ResourceRef("task", "t-1"),
+        )
+
+    assert exc.value.audit_reason == "authorization_not_configured"
+    assert exc.value.http_status == 503
+    assert sink.records[-1].stage == "policy"
+    assert sink.records[-1].outcome == "unavailable"
+
+
+async def test_without_resource_policy_stage_is_skipped(
+    verifier: TokenVerifier, signing_key: SigningKey
+) -> None:
+    authorization = FakeAuthorization(_policy(False))
+    pep, sink = _pep(verifier, authorization=authorization)
+
+    result = await pep.enforce(signing_key.issue(), action="tasks.list")
+
+    assert result.policy is None
+    assert authorization.calls == []
+    assert sink.records[-1].stage == "entitlement"

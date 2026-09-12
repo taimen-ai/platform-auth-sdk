@@ -1,10 +1,11 @@
 """Product-neutral enforcement SDK.
 
-Пакет даёт resource service одинаковый способ ответить на три вопроса: кто
-пришёл (IAM identity), лицензирован ли продукт (entitlement) и как записать
-принятое решение (audit). Четвёртый вопрос — что этой identity можно делать в
-самом продукте — остаётся за сервисом: доменных permissions здесь нет и быть
-не должно.
+Пакет даёт resource service одинаковый способ ответить на четыре вопроса: кто
+пришёл (IAM identity), лицензирован ли продукт (entitlement), может ли этот
+principal выполнить действие над ресурсом (policy-service, ADR-0025) и как
+записать принятое решение (audit). Пятый вопрос — транзакционные гейты самого
+продукта — остаётся за сервисом: доменных permissions здесь нет и быть не
+должно.
 
 SDK не читает чужие базы данных и не знает про Workspace, Project, Task или
 Memory namespace.
@@ -16,6 +17,16 @@ from platform_auth.audit import (
     DecisionRecord,
     redact,
 )
+from platform_auth.authorization import (
+    AuthorizationClient,
+    AuthorizationPolicy,
+    CheckItem,
+    ContextualTuple,
+    NullAuthorizationClient,
+    ObjectPage,
+    PolicyDecision,
+    ResourceRef,
+)
 from platform_auth.context import TrustedAuthContext
 from platform_auth.enforcement import Allowed, PolicyEnforcementPoint
 from platform_auth.entitlement import (
@@ -26,6 +37,7 @@ from platform_auth.entitlement import (
     Reservation,
 )
 from platform_auth.errors import (
+    AuthorizationUnavailable,
     EnforcementError,
     EntitlementUnavailable,
     InsufficientScope,
@@ -47,8 +59,13 @@ from platform_auth.verify import TokenVerifier, VerifierConfig, parse_bearer
 __all__ = [
     "Allowed",
     "AuditSink",
+    "AuthorizationClient",
+    "AuthorizationPolicy",
+    "AuthorizationUnavailable",
     "CachingRevocationDirectory",
+    "CheckItem",
     "CollectingAuditSink",
+    "ContextualTuple",
     "CredentialStatus",
     "Decision",
     "DecisionRecord",
@@ -61,10 +78,14 @@ __all__ = [
     "JwksCache",
     "JwksPolicy",
     "NotEntitled",
+    "NullAuthorizationClient",
     "NullEntitlementClient",
+    "ObjectPage",
     "PermissionDenied",
+    "PolicyDecision",
     "PolicyEnforcementPoint",
     "Reservation",
+    "ResourceRef",
     "RevocationDirectory",
     "ServiceCredentials",
     "ServiceTokenProvider",
