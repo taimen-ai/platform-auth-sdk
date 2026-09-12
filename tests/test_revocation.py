@@ -100,19 +100,70 @@ async def test_source_outage_beyond_window_fails_closed(
 async def test_revocation_is_not_forgotten_by_ttl(
     verifier: TokenVerifier, signing_key: SigningKey, clock: FrozenClock
 ) -> None:
-    """Отозванный credential обратно в active не возвращается."""
+    """Внутри stale window отказ не переспрашивается, даже когда TTL давно вышел."""
     answers = [CredentialStatus.revoked("revoked"), CredentialStatus.allowed()]
 
     async def source(_: TrustedAuthContext) -> CredentialStatus:
         return answers.pop(0)
 
-    directory = CachingRevocationDirectory(source, ttl_seconds=1, clock=clock)
+    directory = CachingRevocationDirectory(
+        source, ttl_seconds=1, stale_after_seconds=600, clock=clock
+    )
     ctx = await _context(verifier, signing_key)
 
     assert not (await directory.check(ctx)).active
-    clock.advance(600)
+    clock.advance(599)
     assert not (await directory.check(ctx)).active
     assert len(answers) == 1
+
+
+async def test_negative_answer_is_reasked_after_stale_window(
+    verifier: TokenVerifier, signing_key: SigningKey, clock: FrozenClock
+) -> None:
+    """Отказ, полученный до появления записи в directory, не залипает навсегда.
+
+    Control Plane отвечает `binding_not_found`, пока строки binding нет; после
+    её появления вход должен открыться без перезапуска процесса.
+    """
+    answers = [CredentialStatus.revoked("binding_not_found"), CredentialStatus.allowed()]
+
+    async def source(_: TrustedAuthContext) -> CredentialStatus:
+        return answers.pop(0)
+
+    directory = CachingRevocationDirectory(
+        source, ttl_seconds=30, stale_after_seconds=120, clock=clock
+    )
+    ctx = await _context(verifier, signing_key)
+
+    assert not (await directory.check(ctx)).active
+    clock.advance(121)
+    assert (await directory.check(ctx)).active
+    assert not answers
+
+
+async def test_negative_answer_survives_source_outage_after_stale_window(
+    verifier: TokenVerifier, signing_key: SigningKey, clock: FrozenClock
+) -> None:
+    """Повторный опрос не удался — прежний отказ остаётся, а не превращается в allow."""
+    calls = 0
+
+    async def source(_: TrustedAuthContext) -> CredentialStatus:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return CredentialStatus.revoked("revoked")
+        raise RuntimeError("directory down")
+
+    directory = CachingRevocationDirectory(
+        source, ttl_seconds=30, stale_after_seconds=120, clock=clock
+    )
+    ctx = await _context(verifier, signing_key)
+
+    assert not (await directory.check(ctx)).active
+    clock.advance(121)
+    with pytest.raises(VerificationUnavailable):
+        await directory.check(ctx)
+    assert calls == 2
 
 
 async def test_token_lifetime_window_rejects_long_lived_token(

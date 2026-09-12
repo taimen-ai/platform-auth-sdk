@@ -78,9 +78,13 @@ class CachingRevocationDirectory:
     `stale_after_seconds` — после какого возраста запись не годится вовсе:
     источник обязан ответить заново, а если не может — вход закрывается.
 
-    Отрицательный ответ (отозван) не кэшируется по TTL: он запоминается до
-    истечения самого токена, потому что обратно в active credential уже не
-    возвращается, а лишний повторный вызов источника здесь не нужен.
+    Отрицательный ответ (отозван) не переспрашивается по TTL: обратно в active
+    credential не возвращается, и лишний вызов источника не нужен. Но и вечно
+    он не живёт: после `stale_after_seconds` источник опрашивается заново.
+    Иначе отказ, полученный до появления записи в directory (например,
+    `binding_not_found` до создания binding), залипал бы до перезапуска
+    процесса. Если источник в этот момент недоступен, прежний отказ остаётся
+    в силе — неизвестность по-прежнему трактуется как отказ.
     """
 
     def __init__(
@@ -104,9 +108,9 @@ class CachingRevocationDirectory:
         if cached is not None:
             stored_at, status = cached
             age = (now - stored_at).total_seconds()
-            if not status.active:
+            if not status.active and age <= self._stale_after:
                 return status
-            if age <= self._ttl:
+            if status.active and age <= self._ttl:
                 return status
             if age > self._stale_after:
                 # Запись просрочена окончательно: если источник не ответит,
