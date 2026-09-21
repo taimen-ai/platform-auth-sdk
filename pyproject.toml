@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Product-neutral enforcement SDK: IAM token validation, trusted Auth Context, entitlement decisions and a uniform deny contract"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "Proprietary" }
+license = { text = "Apache-2.0" }
 dependencies = [
     "pyjwt[crypto]>=2.10",
     "httpx>=0.28",
