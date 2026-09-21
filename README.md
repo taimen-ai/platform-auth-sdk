@@ -1,44 +1,51 @@
 # Platform Auth SDK
 
-Product-neutral Enforcement SDK для resource services платформы. Даёт одинаковый
-Policy Enforcement Point поверх отдельных `iam-service`, `entitlement-service` и
-`policy-service`, не привнося в них доменную модель продукта.
+*English. Русская версия: [README.ru.md](README.ru.md)*
 
-Канонические границы — ADR-0013 и ADR-0025: IAM подтверждает identity,
-Entitlement выдаёт лицензию, policy-service решает организационную
-авторизацию, транзакционные гейты применяет сам resource service. SDK
-связывает шаги в один порядок и делает отказ одинаковым во всех сервисах.
+Product-neutral Enforcement SDK for the platform's resource services. It provides
+the same Policy Enforcement Point on top of the separate `iam-service`,
+`entitlement-service` and `policy-service` without bringing a product's domain
+model into them.
 
-## Что делает
+The canonical boundaries are ADR-0013 and ADR-0025: IAM confirms identity,
+Entitlement issues the license, policy-service decides organizational
+authorization, and transactional gates are applied by the resource service
+itself. The SDK chains these steps into a single order and makes denial
+identical across all services.
 
-- **validation** — RS256-подпись по JWKS с ротацией, точные issuer и audience,
-  временные claims, обязательный набор полей;
-- **trusted Auth Context** — identity строится только из проверенных claims;
-- **revocation** — порт локальной политики отзыва плюс кэш с жёсткой границей
-  устаревания;
-- **entitlement** — decision API и двухфазная квота `reserve → consume|release`
-  с bounded degraded mode;
-- **policy** — контракт Policy Decision Point: `check` / `batch_check` /
-  `list_objects` / `list_subjects` с кэшем в пределах TTL и без grace-окна;
-- **deny contract** — один стабильный код клиенту, точная причина в audit;
-- **audit envelope** — запись решения с корреляцией и без секретов.
+## What it does
 
-## Чего не делает намеренно
+- **validation** — RS256 signature against JWKS with key rotation, exact issuer
+  and audience, time-based claims, a mandatory set of fields;
+- **trusted Auth Context** — identity is built only from verified claims;
+- **revocation** — a port for a local revocation policy plus a cache with a hard
+  staleness bound;
+- **entitlement** — decision API and a two-phase quota `reserve → consume|release`
+  with bounded degraded mode;
+- **policy** — Policy Decision Point contract: `check` / `batch_check` /
+  `list_objects` / `list_subjects` with a cache within the TTL and no grace window;
+- **deny contract** — one stable code for the client, the exact reason in audit;
+- **audit envelope** — a record of the decision with correlation and without
+  secrets.
 
-SDK не содержит продуктовых permissions, не читает чужие базы данных и не знает
-про Workspace, Project, Task или Memory namespace. Он не выпускает credentials и
-не считает организационную политику сам — только спрашивает policy-service;
-транзакционные гейты (`domain_check`) — обязанность сервиса.
+## What it deliberately does not do
 
-## Порядок enforcement
+The SDK contains no product permissions, does not read other services' databases
+and knows nothing about Workspace, Project, Task or Memory namespace. It does not
+issue credentials and does not compute organizational policy itself — it only
+asks policy-service; transactional gates (`domain_check`) are the service's
+responsibility.
+
+## Enforcement order
 
 ```
 identity → revocation → entitlement → policy → transactional gates (domain_check)
 ```
 
-Порядок не настраивается. Каждый следующий шаг дороже предыдущего и осмыслен
-только после него: спрашивать лицензию для неподтверждённой identity незачем, а
-доменное право нельзя вынести из продукта.
+The order is not configurable. Each subsequent step is more expensive than the
+previous one and only makes sense after it: there is no point in asking for a
+license for an unconfirmed identity, and a domain permission cannot be moved out
+of the product.
 
 ```python
 from platform_auth import (
@@ -68,14 +75,14 @@ allowed = await pep.enforce_authorization_header(
 )
 ```
 
-## Стадия policy
+## The policy stage
 
-Организационную авторизацию («может ли principal P выполнить действие A над
-ресурсом R» с учётом дерева воркспейсов, отношений и делегирования) считает
-внешний `policy-service` (ADR-0025). В PEP стадия включается передачей
-`resource`: ресурс — только серверно найденный `type:id`, клиентские claims о
-нём не принимаются. Мутации и privileged actions проверяются с
-`policy_consistency="strong"` — без кэша.
+Organizational authorization ("may principal P perform action A on resource R",
+taking into account the workspace tree, relations and delegation) is computed by
+the external `policy-service` (ADR-0025). In the PEP the stage is enabled by
+passing `resource`: the resource is only a server-side resolved `type:id`; client
+claims about it are not accepted. Mutations and privileged actions are checked
+with `policy_consistency="strong"` — bypassing the cache.
 
 ```python
 from platform_auth import AuthorizationClient, ContextualTuple, ResourceRef
@@ -96,40 +103,42 @@ allowed = await pep.enforce_authorization_header(
 allowed.policy  # PolicyDecision: reason_code, decision_id, model_version, source
 ```
 
-Клиент сам по себе даёт `check`, `batch_check` (до 100 элементов),
-`list_objects` (постранично, для фильтрации списков) и `list_subjects` (для
-маршрутизации Approval). Кэшируется только `check` с обычной согласованностью,
-не дольше `cache_ttl_seconds` (по умолчанию 5 с); `invalidate(tenant_id)` —
-точка подключения подписки на события `binding.*`. Вызов от имени конечного
-пользователя — `on_behalf_of`, для него service identity нужен scope
-`policy:check-on-behalf`.
+On its own the client provides `check`, `batch_check` (up to 100 items),
+`list_objects` (paginated, for filtering lists) and `list_subjects` (for
+Approval routing). Only `check` with regular consistency is cached, for no longer
+than `cache_ttl_seconds` (5 s by default); `invalidate(tenant_id)` is the hook
+for subscribing to `binding.*` events. A call on behalf of an end user is
+`on_behalf_of`; for it the service identity needs the `policy:check-on-behalf`
+scope.
 
-Отсутствие настройки не открывает доступ: `resource` без сконфигурированного
-клиента даёт `authorization_unavailable`, а `NullAuthorizationClient` отвечает
-`deny` с `source="disabled"` — в отличие от `NullEntitlementClient`, потому
-что «лицензия не ограничена» и «права никто не проверил» — разные вещи.
+A missing configuration does not open access: `resource` without a configured
+client yields `authorization_unavailable`, and `NullAuthorizationClient` answers
+`deny` with `source="disabled"` — unlike `NullEntitlementClient`, because "the
+license is unrestricted" and "nobody checked the permissions" are different
+things.
 
 ## Fail closed
 
-Все режимы недоступности закрывают вход, а не открывают его:
+All unavailability modes close the door rather than open it:
 
-| Ситуация | Ответ |
+| Situation | Response |
 |---|---|
-| JWKS недоступен дольше `stale_after` | `verification_unavailable` (503) |
-| Источник revocation молчит дольше окна | `verification_unavailable` (503) |
-| Entitlement недоступен, кэш просрочен | `entitlement_unavailable` (503) |
-| policy-service недоступен, отклонил запрос или не настроен при переданном `resource` | `authorization_unavailable` (503) |
-| Любой дефект токена | `invalid_token` (401) |
-| Нет scope / лицензии / права | `insufficient_scope` / `not_entitled` / `permission_denied` (403) |
+| JWKS unavailable for longer than `stale_after` | `verification_unavailable` (503) |
+| The revocation source is silent for longer than the window | `verification_unavailable` (503) |
+| Entitlement unavailable, cache expired | `entitlement_unavailable` (503) |
+| policy-service unavailable, rejected the request, or not configured while `resource` was passed | `authorization_unavailable` (503) |
+| Any token defect | `invalid_token` (401) |
+| No scope / license / permission | `insufficient_scope` / `not_entitled` / `permission_denied` (403) |
 
-Все дефекты токена схлопываются в один код: разные ответы превратили бы
-endpoint в оракул по чужим credential. Точная причина уходит в audit.
+All token defects collapse into a single code: distinct responses would turn the
+endpoint into an oracle for other people's credentials. The exact reason goes to
+audit.
 
-Degraded mode ограничен дважды: по возрасту записи и по её содержанию.
-Устаревшее решение нельзя применить к запросу с бо́льшим `required_amount` —
-иначе кэш становится способом обойти квоту во время сбоя.
+Degraded mode is bounded twice: by the age of the record and by its content. A
+stale decision cannot be applied to a request with a larger `required_amount` —
+otherwise the cache becomes a way to bypass the quota during an outage.
 
-## Разработка
+## Development
 
 ```bash
 uv sync
@@ -138,6 +147,6 @@ uv run ruff check .
 uv run mypy
 ```
 
-`platform_auth.testing` даёт потребителю SDK генератор ключей, выпуск токена с
-произвольными claims и управляемые часы — чтобы каждый сервис не писал свой
-вариант и они не разошлись.
+`platform_auth.testing` gives the SDK consumer a key generator, token issuance
+with arbitrary claims and a controllable clock — so that each service does not
+write its own variant and they do not drift apart.
