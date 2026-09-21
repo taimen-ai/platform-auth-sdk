@@ -1,0 +1,10 @@
+# gitleaks: allowlist только для тестовой фикстуры (подготовка открытого релиза 0.1).
+# Значение проверено вручную: тестовая константа проверки токена, не учётные данные.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Unit-test fixture for token verification"
+paths = [
+  '''^tests/test_verify\.py$''',   # фикстуры теста verify(): тестовые ключи и токены
+]
