@@ -1,6 +1,6 @@
 # Platform Auth SDK
 
-*English. Русская версия: [README.ru.md](README.ru.md)*
+*English. Russian version: [README.ru.md](README.ru.md)*
 
 Product-neutral Enforcement SDK for the platform's resource services. It provides
 the same Policy Enforcement Point on top of the separate `iam-service`,
