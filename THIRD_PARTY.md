@@ -1,4 +1,3 @@
-
 <!-- generated-dependencies -->
 
 ## Third-party Python dependencies of `platform-auth-sdk`
