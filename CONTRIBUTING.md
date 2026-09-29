@@ -10,8 +10,8 @@ the Taimen resource services.
 
 ## Before you start
 
-- Read the [Product Vision](https://github.com/taimen-ai/taimen/blob/main/docs/product-vision.md)
-  and the [ADR registry](https://github.com/taimen-ai/taimen/blob/main/docs/adr/README.md)
+- Read the [Product Vision](https://github.com/monthu56/taimen/blob/main/docs/product-vision.md)
+  and the [ADR registry](https://github.com/monthu56/taimen/blob/main/docs/adr/README.md)
   of the umbrella repository. Architecture decisions are recorded as ADRs (in
   Russian, with an English title line); English summaries are provided on
   request in the ADR's discussion.
@@ -20,7 +20,7 @@ the Taimen resource services.
   services) and ADR-0025 (authorization model and policy-service), which fix
   the enforcement order `identity → revocation → entitlement → policy →
   transactional gates` that the SDK implements.
-- Check the [roadmap](https://github.com/taimen-ai/taimen/blob/main/docs/roadmap.md)
+- Check the [roadmap](https://github.com/monthu56/taimen/blob/main/docs/roadmap.md)
   and open issues before starting a large change. For anything that changes
   the public API of `platform_auth`, the deny contract or the enforcement
   order, open an issue first and propose an ADR in the umbrella repository.
@@ -32,8 +32,8 @@ contribution, so that the project can be relicensed or defended without
 tracking down every author. The CLA is checked by cla-assistant on each pull
 request; you sign once.
 
-- Individuals: [`cla/CLA-individual.md`](https://github.com/taimen-ai/taimen/blob/main/cla/CLA-individual.md)
-- Companies contributing on behalf of employees: [`cla/CLA-entity.md`](https://github.com/taimen-ai/taimen/blob/main/cla/CLA-entity.md)
+- Individuals: [`cla/CLA-individual.md`](https://github.com/monthu56/taimen/blob/main/cla/CLA-individual.md)
+- Companies contributing on behalf of employees: [`cla/CLA-entity.md`](https://github.com/monthu56/taimen/blob/main/cla/CLA-entity.md)
 
 The CLA grants the project a copyright and patent licence to your
 contribution; you keep your copyright.
@@ -78,7 +78,7 @@ component, as in CI).
 - Public API changes (names exported from `platform_auth`, error codes of the
   deny contract, configuration fields, `platform_auth.testing` helpers) update
   the README and, when they break compatibility, the platform's
-  [`docs/migration-vX.Y.md`](https://github.com/taimen-ai/taimen/blob/main/docs/)
+  [`docs/migration-vX.Y.md`](https://github.com/monthu56/taimen/blob/main/docs/)
   in the umbrella repository.
 - Fail-closed behaviour is a contract: every unavailability path of the SDK
   denies access (see "Fail closed" in the README). A change that opens access
