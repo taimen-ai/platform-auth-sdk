@@ -10,8 +10,9 @@ the Taimen resource services.
 
 ## Before you start
 
-- Read the [Product Vision](https://github.com/taimen-ai/taimen/blob/main/docs/product-vision.md)
-  and the [ADR registry](https://github.com/taimen-ai/taimen/blob/main/docs/adr/README.md)
+- Read the platform overview in the
+  [guide](https://github.com/taimen-ai/taimen/tree/main/guide/docs/overview)
+  (in Russian)
   of the umbrella repository. Architecture decisions are recorded as ADRs (in
   Russian, with an English title line); English summaries are provided on
   request in the ADR's discussion.
@@ -20,8 +21,7 @@ the Taimen resource services.
   services) and ADR-0025 (authorization model and policy-service), which fix
   the enforcement order `identity → revocation → entitlement → policy →
   transactional gates` that the SDK implements.
-- Check the [roadmap](https://github.com/taimen-ai/taimen/blob/main/docs/roadmap.md)
-  and open issues before starting a large change. For anything that changes
+- Check the open issues before starting a large change. For anything that changes
   the public API of `platform_auth`, the deny contract or the enforcement
   order, open an issue first and propose an ADR in the umbrella repository.
 
@@ -77,9 +77,7 @@ component, as in CI).
 - Commit messages explain *why*, not *what*; reference the ADR or issue.
 - Public API changes (names exported from `platform_auth`, error codes of the
   deny contract, configuration fields, `platform_auth.testing` helpers) update
-  the README and, when they break compatibility, the platform's
-  [`docs/migration-vX.Y.md`](https://github.com/taimen-ai/taimen/blob/main/docs/)
-  in the umbrella repository.
+  the README and, when they break compatibility, the component's release notes.
 - Fail-closed behaviour is a contract: every unavailability path of the SDK
   denies access (see "Fail closed" in the README). A change that opens access
   on failure will not be accepted without an ADR.
