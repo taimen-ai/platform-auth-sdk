@@ -29,5 +29,5 @@ The components below are used under the following conditions:
 - httpx 0.28.1 — BSD-3-Clause
 - idna 3.18 — BSD-3-Clause
 - pycparser 3.0 — BSD-3-Clause
-- PyJWT 2.13.0 — MIT
+- PyJWT 2.15.1 — MIT
 - typing_extensions 4.16.0 — PSF-2.0

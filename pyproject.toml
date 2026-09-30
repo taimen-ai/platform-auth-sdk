@@ -6,7 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "pyjwt[crypto]>=2.10",
+    "pyjwt[crypto]>=2.14",
+    # cryptography приходит транзитивно через pyjwt[crypto], но нижняя граница
+    # объявлена явно: в 49.x есть уязвимость уровня high, а pyjwt её не поднимает.
+    # Так ограничение видят и установки через pip, не только uv.lock.
+    "cryptography>=50.0.0",
     "httpx>=0.28",
 ]
 
