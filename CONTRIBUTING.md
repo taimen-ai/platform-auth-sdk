@@ -62,7 +62,8 @@ are disabled; either language is fine in new code.
 
 The SDK is consumed by other Taimen components (`control-plane`,
 `memory-service`, `policy-service`, `process-runtime`) as a **path dependency**
-`../platform-auth-sdk`, so a change here is visible to them without a release.
+(`../../sdk/platform-auth-sdk` from `services/` of the umbrella layout,
+TAI-ADR-0064), so a change here is visible to them without a release.
 When you change the public API or the deny contract, check out the umbrella
 repository (`git clone --recurse-submodules`) and run the consumers' tests as
 well (`make check` in the umbrella runs ruff and tests of every Python
